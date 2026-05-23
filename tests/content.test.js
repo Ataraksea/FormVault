@@ -52,9 +52,10 @@ beforeAll(() => {
   // Execute and collect testable functions
   const wrapper = new Function(
     body + '\n' +
-    'return { generatePageKey, isSensitiveField, getUniqueSelector, getXPath, ' +
+    'return { generatePageKey, generateTopPageKey, isSensitiveField, getUniqueSelector, getXPath, ' +
     'getFieldLabel, getFieldValue, isValidFaviconUrl, findFormFields, ' +
-    'isTrackableField, timeAgo, collectFormData, restoreFields };'
+    'isTrackableField, timeAgo, collectFormData, restoreFields, querySelectorDeep, ' +
+    'getLightningComboboxDisplayText, markFrameFields };'
   );
 
   contentFns = wrapper();
@@ -104,6 +105,18 @@ describe('generatePageKey', () => {
   test('omits query string when all params are stripped', () => {
     setLocation('https://example.com/page?utm_source=x&utm_medium=y');
     expect(contentFns.generatePageKey()).toBe('https://example.com/page');
+  });
+});
+
+describe('generateTopPageKey', () => {
+  test('uses current URL in top frame', () => {
+    delete window.location;
+    window.location = new URL('https://example.com/form?step=2');
+
+    expect(contentFns.generateTopPageKey()).toBe('https://example.com/form?step=2');
+
+    delete window.location;
+    window.location = new URL('about:blank');
   });
 });
 
@@ -316,6 +329,33 @@ describe('getFieldLabel', () => {
     expect(contentFns.getFieldLabel(input)).toBe('email');
     input.remove();
   });
+
+  test('uses string custom element labels only', () => {
+    const combobox = document.createElement('lightning-combobox');
+    combobox.setAttribute('label', 'Status');
+    Object.defineProperty(combobox, 'label', {
+      configurable: true,
+      value: {}
+    });
+    document.body.appendChild(combobox);
+
+    expect(contentFns.getFieldLabel(combobox)).toBe('Status');
+
+    combobox.remove();
+  });
+
+  test('uses lightning-combobox button aria-label when element label is unavailable', () => {
+    const combobox = document.createElement('lightning-combobox');
+    const button = document.createElement('button');
+    button.setAttribute('part', 'input-button');
+    button.setAttribute('aria-label', 'Status');
+    combobox.appendChild(button);
+    document.body.appendChild(combobox);
+
+    expect(contentFns.getFieldLabel(combobox)).toBe('Status');
+
+    combobox.remove();
+  });
 });
 
 // ==================== getFieldValue ====================
@@ -370,6 +410,26 @@ describe('getFieldValue', () => {
     const combobox = document.createElement('lightning-combobox');
     combobox.value = 'in-progress';
     expect(contentFns.getFieldValue(combobox)).toBe('in-progress');
+  });
+
+  test('ignores non-string lightning-combobox values', () => {
+    const combobox = document.createElement('lightning-combobox');
+    Object.defineProperty(combobox, 'value', {
+      configurable: true,
+      value: { selected: 'finished' }
+    });
+
+    expect(contentFns.getFieldValue(combobox)).toBe('');
+  });
+
+  test('reads selected lightning-combobox option when element value is unavailable', () => {
+    const combobox = document.createElement('lightning-combobox');
+    const option = document.createElement('lightning-base-combobox-item');
+    option.setAttribute('data-value', 'finished');
+    option.setAttribute('aria-selected', 'true');
+    combobox.appendChild(option);
+
+    expect(contentFns.getFieldValue(combobox)).toBe('finished');
   });
 
   test('returns empty string for empty input', () => {
@@ -482,6 +542,78 @@ describe('collectFormData', () => {
 
     combobox.remove();
   });
+
+  test('saves lightning-combobox fields inside shadow DOM', () => {
+    const host = document.createElement('div');
+    const root = host.attachShadow({ mode: 'open' });
+    const combobox = document.createElement('lightning-combobox');
+    combobox.name = 'progress';
+    combobox.label = 'Status';
+    combobox.value = 'inProgress';
+    root.appendChild(combobox);
+    document.body.appendChild(host);
+
+    const fields = contentFns.collectFormData();
+
+    expect(fields).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        selector: 'div > lightning-combobox',
+        name: 'progress',
+        label: 'Status',
+        type: 'lightning-combobox',
+        value: 'inProgress'
+      })
+    ]));
+
+    host.remove();
+  });
+
+  test('saves lightning-combobox display text when rendered by base combobox', () => {
+    const combobox = document.createElement('lightning-combobox');
+    const root = combobox.attachShadow({ mode: 'open' });
+    const baseCombobox = document.createElement('lightning-base-combobox');
+    const baseRoot = baseCombobox.attachShadow({ mode: 'open' });
+    const value = document.createElement('span');
+    value.setAttribute('part', 'input-button-value');
+    value.textContent = 'Finished';
+    combobox.name = 'progress';
+    combobox.value = 'finished';
+    baseRoot.appendChild(value);
+    root.appendChild(baseCombobox);
+    document.body.appendChild(combobox);
+
+    const fields = contentFns.collectFormData();
+
+    expect(fields).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'progress',
+        type: 'lightning-combobox',
+        value: 'finished',
+        displayValue: 'Finished'
+      })
+    ]));
+
+    combobox.remove();
+  });
+
+  test('marks collected fields with current frame identifier', () => {
+    const input = document.createElement('input');
+    input.name = 'firstName';
+    input.value = 'Alex';
+    document.body.appendChild(input);
+
+    const fields = contentFns.markFrameFields(contentFns.collectFormData());
+
+    expect(fields).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'firstName',
+        value: 'Alex',
+        frame: ''
+      })
+    ]));
+
+    input.remove();
+  });
 });
 
 // ==================== restoreFields ====================
@@ -527,6 +659,184 @@ describe('restoreFields', () => {
     expect(combobox.value).toBe('finished');
     expect(detailValue).toBe('finished');
 
+    combobox.remove();
+  });
+
+  test('restores shadow DOM lightning-combobox using native value setter', () => {
+    const host = document.createElement('div');
+    const root = host.attachShadow({ mode: 'open' });
+    const combobox = document.createElement('lightning-combobox');
+    combobox.name = 'progress';
+    combobox._value = 'inProgress';
+    Object.defineProperty(combobox, 'value', {
+      get() {
+        return this._value;
+      },
+      set(value) {
+        this._value = value;
+        this.setAttribute('data-rendered-value', value);
+      }
+    });
+    root.appendChild(combobox);
+    document.body.appendChild(host);
+
+    let detailValue = '';
+    combobox.addEventListener('change', event => {
+      detailValue = event.detail.value;
+    });
+
+    const restored = contentFns.restoreFields([{
+      selector: 'div > lightning-combobox',
+      name: 'progress',
+      type: 'lightning-combobox',
+      value: 'finished'
+    }]);
+
+    expect(restored).toBe(1);
+    expect(combobox.value).toBe('finished');
+    expect(combobox.getAttribute('data-rendered-value')).toBe('finished');
+    expect(detailValue).toBe('finished');
+
+    host.remove();
+  });
+
+  test('restores lightning-combobox display text rendered by base combobox', () => {
+    const combobox = document.createElement('lightning-combobox');
+    combobox.name = 'progress';
+    combobox.value = 'inProgress';
+
+    const root = combobox.attachShadow({ mode: 'open' });
+    const baseCombobox = document.createElement('lightning-base-combobox');
+    const baseRoot = baseCombobox.attachShadow({ mode: 'open' });
+    const button = document.createElement('button');
+    button.setAttribute('part', 'input-button');
+    const value = document.createElement('span');
+    value.setAttribute('part', 'input-button-value');
+    value.textContent = 'In Progress';
+    button.appendChild(value);
+    baseRoot.appendChild(button);
+    root.appendChild(baseCombobox);
+    document.body.appendChild(combobox);
+
+    const restored = contentFns.restoreFields([{
+      selector: 'body > lightning-combobox',
+      name: 'progress',
+      type: 'lightning-combobox',
+      value: 'finished',
+      displayValue: 'Finished'
+    }]);
+
+    expect(restored).toBe(1);
+    expect(combobox.value).toBe('finished');
+    expect(value.textContent).toBe('Finished');
+    expect(button.getAttribute('data-value')).toBe('Finished');
+
+    combobox.remove();
+  });
+
+  test('restores light DOM lightning-combobox rendered by Salesforce docs', () => {
+    const combobox = document.createElement('lightning-combobox');
+    const button = document.createElement('button');
+    button.setAttribute('part', 'input-button');
+    button.setAttribute('aria-expanded', 'false');
+    button.setAttribute('data-value', 'In Progress');
+
+    const value = document.createElement('span');
+    value.setAttribute('part', 'input-button-value');
+    value.textContent = 'In Progress';
+    button.appendChild(value);
+
+    const option = document.createElement('lightning-base-combobox-item');
+    option.setAttribute('data-value', 'finished');
+    option.setAttribute('aria-selected', 'false');
+    option.textContent = 'Finished';
+    option.addEventListener('click', () => {
+      option.setAttribute('aria-selected', 'true');
+      value.textContent = 'Finished';
+    });
+
+    button.addEventListener('click', () => {
+      button.setAttribute('aria-expanded', 'true');
+    });
+
+    combobox.append(button, option);
+    document.body.appendChild(combobox);
+
+    const restored = contentFns.restoreFields([{
+      selector: 'body > lightning-combobox',
+      name: 'progress',
+      type: 'lightning-combobox',
+      value: 'finished',
+      displayValue: 'Finished'
+    }]);
+
+    expect(restored).toBe(1);
+    expect(button.getAttribute('aria-expanded')).toBe('true');
+    expect(option.getAttribute('aria-selected')).toBe('true');
+    expect(value.textContent).toBe('Finished');
+    expect(button.getAttribute('data-value')).toBe('Finished');
+
+    combobox.remove();
+  });
+
+  test('restores lightning-combobox with event target for LWC handlers', () => {
+    const combobox = document.createElement('lightning-combobox');
+    combobox.name = 'progress';
+    combobox.value = 'inProgress';
+    document.body.appendChild(combobox);
+
+    let eventTarget = null;
+    combobox.addEventListener('change', event => {
+      eventTarget = event.target;
+    });
+
+    const restored = contentFns.restoreFields([{
+      selector: 'body > lightning-combobox',
+      name: 'progress',
+      type: 'lightning-combobox',
+      value: 'finished',
+      displayValue: 'Finished'
+    }]);
+
+    expect(restored).toBe(1);
+    expect(eventTarget).toBe(combobox);
+
+    combobox.remove();
+  });
+
+  test('skips unframed saved fields in child frames', () => {
+    const combobox = document.createElement('lightning-combobox');
+    combobox.name = 'progress';
+    combobox.value = 'inProgress';
+    document.body.appendChild(combobox);
+
+    const originalTop = window.top;
+    const originalLocation = window.location;
+    const frameTop = {};
+
+    Object.defineProperty(window, 'top', {
+      configurable: true,
+      value: frameTop
+    });
+    delete window.location;
+    window.location = new URL('https://developer.salesforce.com/playground/lwc/lightning/combobox.html');
+
+    const restored = contentFns.restoreFields([{
+      selector: 'body > lightning-combobox',
+      name: 'progress',
+      type: 'lightning-combobox',
+      value: 'finished'
+    }]);
+
+    expect(restored).toBe(0);
+    expect(combobox.value).toBe('inProgress');
+
+    Object.defineProperty(window, 'top', {
+      configurable: true,
+      value: originalTop
+    });
+    delete window.location;
+    window.location = originalLocation;
     combobox.remove();
   });
 });
@@ -728,5 +1038,18 @@ describe('findFormFields', () => {
     expect(fields).toContain(el);
 
     el.remove();
+  });
+
+  test('finds lightning-combobox elements inside shadow DOM', () => {
+    const host = document.createElement('div');
+    const root = host.attachShadow({ mode: 'open' });
+    const el = document.createElement('lightning-combobox');
+    root.appendChild(el);
+    document.body.appendChild(host);
+
+    const fields = contentFns.findFormFields();
+    expect(fields).toContain(el);
+
+    host.remove();
   });
 });

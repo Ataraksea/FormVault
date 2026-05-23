@@ -143,6 +143,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
   }
 
+  if (message.action === 'getFrameFormFields') {
+    getFrameFormFields(sender.tab?.id, message.pageKey, message.frameId).then(fields => {
+      sendResponse({ fields });
+    });
+    return true;
+  }
+
+  if (message.action === 'restoreFrameForms') {
+    restoreFrameForms(sender.tab?.id, message.savedData).then(restored => {
+      sendResponse({ restored });
+    });
+    return true;
+  }
+
   if (message.action === 'getBadgeCount') {
     updateBadge(message.tabId, message.domain);
   }
@@ -150,3 +164,46 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // Return false — no async sendResponse needed
   return false;
 });
+
+async function sendMessageToFrames(tabId, message) {
+  if (!tabId) return [];
+
+  try {
+    const frames = await chrome.webNavigation.getAllFrames({ tabId });
+    const frameIds = frames
+      .filter(frame => frame.frameId !== 0)
+      .map(frame => frame.frameId);
+
+    const responses = await Promise.all(frameIds.map(async frameId => {
+      try {
+        return await chrome.tabs.sendMessage(tabId, message, { frameId });
+      } catch (e) {
+        return null;
+      }
+    }));
+
+    return responses.filter(Boolean);
+  } catch (e) {
+    return [];
+  }
+}
+
+async function getFrameFormFields(tabId, pageKey, sourceFrameId) {
+  const responses = await sendMessageToFrames(tabId, {
+    action: 'collectFrameFormFields',
+    pageKey
+  });
+
+  return responses
+    .filter(response => response.frameId !== sourceFrameId)
+    .flatMap(response => response.fields || []);
+}
+
+async function restoreFrameForms(tabId, savedData) {
+  const responses = await sendMessageToFrames(tabId, {
+    action: 'restoreSavedFrameForms',
+    savedData
+  });
+
+  return responses.reduce((total, response) => total + (response.restored || 0), 0);
+}

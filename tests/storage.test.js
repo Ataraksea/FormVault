@@ -89,6 +89,64 @@ describe('saveForm', () => {
     expect(stored.forms.page1.url).toBe('https://new.com');
   });
 
+  test('merges fields from different frames at same page key', async () => {
+    await FormVaultStorage.saveForm('page1', {
+      url: 'https://example.com',
+      fields: [{
+        name: 'top-field',
+        value: 'top',
+        frame: ''
+      }]
+    });
+    await FormVaultStorage.saveForm('page1', {
+      url: 'https://example.com/frame',
+      fields: [{
+        name: 'frame-field',
+        value: 'frame',
+        frame: 'https://example.com/frame'
+      }]
+    });
+
+    const stored = await chrome.storage.local.get('forms');
+    expect(stored.forms.page1.fields).toEqual([
+      expect.objectContaining({ name: 'top-field', frame: '' }),
+      expect.objectContaining({ name: 'frame-field', frame: 'https://example.com/frame' })
+    ]);
+  });
+
+  test('replaces fields only for the frame being saved', async () => {
+    await chrome.storage.local.set({
+      forms: {
+        page1: {
+          url: 'https://example.com',
+          fields: [
+            { name: 'top-field', value: 'top', frame: '' },
+            { name: 'old-frame-field', value: 'old', frame: 'https://example.com/frame' }
+          ],
+          savedAt: 1000
+        }
+      }
+    });
+
+    await FormVaultStorage.saveForm('page1', {
+      url: 'https://example.com/frame',
+      fields: [{
+        name: 'new-frame-field',
+        value: 'new',
+        frame: 'https://example.com/frame'
+      }]
+    });
+
+    const stored = await chrome.storage.local.get('forms');
+    expect(stored.forms.page1.fields).toEqual([
+      expect.objectContaining({ name: 'top-field', frame: '' }),
+      expect.objectContaining({ name: 'new-frame-field', frame: 'https://example.com/frame' })
+    ]);
+    expect(stored.forms.page1.fields).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'old-frame-field' })
+    ]));
+  });
+
   test('triggers quota prune when near limit', async () => {
     // Simulate high storage usage (above 80% of 10MB)
     chrome.storage.local.getBytesInUse.mockResolvedValueOnce(9 * 1024 * 1024);

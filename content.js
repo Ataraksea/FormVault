@@ -21,6 +21,9 @@
   const TRACKED_CUSTOM_ELEMENTS = new Set([
     'lightning-combobox'
   ]);
+  const LIGHTNING_INPUT_BUTTON_SELECTOR = '[part="input-button"]';
+  const LIGHTNING_INPUT_VALUE_SELECTOR = '[part="input-button-value"]';
+  const LIGHTNING_OPTION_SELECTOR = 'lightning-base-combobox-item[data-value]';
 
   // Sensitive field patterns — never save these
   const SENSITIVE_PATTERNS = /password|passwd|pwd|ssn|social.?security|cc[-_]?num|card[-_]?number|cvv|cvc|ccv|credit.?card|expir|routing.?number|account.?number|pin[-_]?code/i;
@@ -39,6 +42,10 @@
     'ref', 'source', 'trk', 'trkCampaign',
     '__cf_chl_jschl_tk__', '__cf_chl_tk'
   ]);
+
+  const frameId = typeof crypto !== 'undefined' && crypto.randomUUID
+    ? crypto.randomUUID()
+    : String(Date.now()) + '-' + Math.random().toString(36).slice(2);
 
   // CSS.escape polyfill for older environments
   const cssEscape = typeof CSS !== 'undefined' && CSS.escape
@@ -66,6 +73,37 @@
     return url.origin + url.pathname + (paramStr ? '?' + paramStr : '');
   }
 
+  function generateTopPageKey() {
+    try {
+      if (window.top !== window && document.referrer) {
+        const referrer = new URL(document.referrer);
+        const current = new URL(window.location.href);
+        const params = new URLSearchParams(referrer.search);
+        const currentParams = new URLSearchParams(current.search);
+
+        for (const [key, value] of currentParams) {
+          if (!params.has(key)) {
+            params.set(key, value);
+          }
+        }
+
+        const strippedParams = new URLSearchParams();
+        for (const [key, value] of params) {
+          if (!STRIP_PARAMS.has(key)) {
+            strippedParams.set(key, value);
+          }
+        }
+        strippedParams.sort();
+        const paramStr = strippedParams.toString();
+        return referrer.origin + referrer.pathname + (paramStr ? '?' + paramStr : '');
+      }
+    } catch (e) {
+      // Fall back to the current frame URL when parent/referrer access fails.
+    }
+
+    return generatePageKey();
+  }
+
   // ==================== FIELD DETECTION & IDENTIFICATION ====================
 
   /**
@@ -91,6 +129,35 @@
     return TRACKED_CUSTOM_ELEMENTS.has(el.tagName.toLowerCase());
   }
 
+  function queryComposed(el, selector) {
+    const directMatch = el.matches?.(selector) ? el : null;
+    if (directMatch) return directMatch;
+
+    const lightMatch = el.querySelector(selector);
+    if (lightMatch) return lightMatch;
+
+    function search(root) {
+      const match = root.querySelector(selector);
+      if (match) return match;
+
+      const elements = root.querySelectorAll('*');
+      for (const child of elements) {
+        if (child.shadowRoot) {
+          const nestedMatch = search(child.shadowRoot);
+          if (nestedMatch) return nestedMatch;
+        }
+      }
+      return null;
+    }
+
+    return el.shadowRoot ? search(el.shadowRoot) : null;
+  }
+
+  function getComposedParent(el) {
+    const root = el.getRootNode && el.getRootNode();
+    return el.parentElement || (root instanceof ShadowRoot ? root.host : null);
+  }
+
   /**
    * Generate a unique CSS selector for an element
    */
@@ -114,7 +181,7 @@
         parts.unshift(`#${cssEscape(current.id)}`);
         break;
       }
-      const parent = current.parentElement;
+      const parent = getComposedParent(current);
       if (parent) {
         const siblings = Array.from(parent.children).filter(c => c.tagName === current.tagName);
         if (siblings.length > 1) {
@@ -123,7 +190,7 @@
         }
       }
       parts.unshift(selector);
-      current = current.parentElement;
+      current = getComposedParent(current);
       depth++;
     }
     return parts.join(' > ');
@@ -133,6 +200,8 @@
    * Generate an XPath for an element (last resort identifier)
    */
   function getXPath(el) {
+    if (el.getRootNode && el.getRootNode() instanceof ShadowRoot) return '';
+
     const parts = [];
     let current = el;
     while (current && current.nodeType === Node.ELEMENT_NODE) {
@@ -153,6 +222,12 @@
    * Extract human-readable label for a field
    */
   function getFieldLabel(el) {
+    if (isTrackedCustomElement(el)) {
+      if (typeof el.label === 'string') return el.label;
+      const inputButton = queryComposed(el, LIGHTNING_INPUT_BUTTON_SELECTOR);
+      return el.getAttribute('label') || inputButton?.getAttribute('aria-label') || '';
+    }
+
     // Check associated <label>
     if (el.id) {
       const label = document.querySelector(`label[for="${cssEscape(el.id)}"]`);
@@ -200,6 +275,11 @@
     if (el.getAttribute('contenteditable') === 'true') {
       return el.textContent || '';
     }
+    if (isTrackedCustomElement(el)) {
+      const value = el.value;
+      if (typeof value === 'string' && value) return value;
+      return queryComposed(el, LIGHTNING_OPTION_SELECTOR + '[aria-selected="true"]')?.getAttribute('data-value') || '';
+    }
     if (el instanceof HTMLInputElement && el.type === 'checkbox') {
       return Boolean(el.checked);
     }
@@ -209,16 +289,31 @@
       }
       return el.value;
     }
-    if (isTrackedCustomElement(el)) {
-      return el.value || '';
-    }
     return el.value || '';
+  }
+
+  function getLightningComboboxDisplayText(el) {
+    if (!isTrackedCustomElement(el)) {
+      return '';
+    }
+
+    const valueEl = queryComposed(el, LIGHTNING_INPUT_VALUE_SELECTOR);
+    return valueEl ? valueEl.textContent.trim() : '';
   }
 
   function hasSavableValue(value) {
     if (typeof value === 'boolean') return true;
     if (Array.isArray(value)) return value.length >= MIN_FIELD_LENGTH;
     return value.length >= MIN_FIELD_LENGTH;
+  }
+
+  function walkElements(root, callback) {
+    root.querySelectorAll('*').forEach(el => {
+      callback(el);
+      if (el.shadowRoot) {
+        walkElements(el.shadowRoot, callback);
+      }
+    });
   }
 
   /**
@@ -239,35 +334,25 @@
   function findFormFields() {
     const fields = [];
 
-    // Standard inputs
-    document.querySelectorAll('input').forEach(el => {
-      const type = (el.type || 'text').toLowerCase();
-      if (type !== 'checkbox' && !TRACKED_INPUT_TYPES.has(type)) return;
-      if (isSensitiveField(el)) return;
-      fields.push(el);
-    });
-
-    // Textareas
-    document.querySelectorAll('textarea').forEach(el => {
-      if (isSensitiveField(el)) return;
-      fields.push(el);
-    });
-
-    // Selects
-    document.querySelectorAll('select').forEach(el => {
-      if (isSensitiveField(el)) return;
-      fields.push(el);
-    });
-
-    // Contenteditable elements
-    document.querySelectorAll('[contenteditable="true"]').forEach(el => {
-      if (el.tagName === 'BODY') return;
-      fields.push(el);
-    });
-
-    document.querySelectorAll(Array.from(TRACKED_CUSTOM_ELEMENTS).join(',')).forEach(el => {
-      if (isSensitiveField(el)) return;
-      fields.push(el);
+    walkElements(document, el => {
+      if (el.tagName === 'INPUT') {
+        const type = (el.type || 'text').toLowerCase();
+        if (type !== 'checkbox' && !TRACKED_INPUT_TYPES.has(type)) return;
+        if (isSensitiveField(el)) return;
+        fields.push(el);
+      } else if (el.tagName === 'TEXTAREA') {
+        if (isSensitiveField(el)) return;
+        fields.push(el);
+      } else if (el.tagName === 'SELECT') {
+        if (isSensitiveField(el)) return;
+        fields.push(el);
+      } else if (el.getAttribute('contenteditable') === 'true') {
+        if (el.tagName === 'BODY') return;
+        fields.push(el);
+      } else if (isTrackedCustomElement(el)) {
+        if (isSensitiveField(el)) return;
+        fields.push(el);
+      }
     });
 
     return fields;
@@ -303,7 +388,8 @@
           : el.tagName.toLowerCase() === 'select'
             ? 'select'
             : (el.type || 'text'),
-        value: value
+        value: value,
+        displayValue: isTrackedCustomElement(el) ? getLightningComboboxDisplayText(el) : ''
       });
     });
 
@@ -319,7 +405,7 @@
     const fields = collectFormData();
     if (fields.length === 0) return;
 
-    const pageKey = generatePageKey();
+    const pageKey = generateTopPageKey();
 
     // Try to get favicon (validated)
     let favicon = '';
@@ -337,7 +423,7 @@
       url: window.location.href,
       title: document.title || window.location.hostname,
       favicon: favicon,
-      fields: fields
+      fields: markFrameFields(fields)
     };
 
     try {
@@ -397,6 +483,141 @@
     fields.forEach(attachFieldListeners);
   }
 
+  function querySelectorDeep(selector) {
+    let found = null;
+
+    function search(root) {
+      try {
+        found = root.querySelector(selector);
+      } catch (e) {
+        return true;
+      }
+      if (found) return true;
+
+      const elements = root.querySelectorAll('*');
+      for (const el of elements) {
+        if (el.shadowRoot && search(el.shadowRoot)) return true;
+      }
+      return false;
+    }
+
+    search(document);
+    if (!found) {
+      walkElements(document, el => {
+        if (!found && getUniqueSelector(el) === selector) {
+          found = el;
+        }
+      });
+    }
+    return found;
+  }
+
+  function getCustomElementValueSetter(el) {
+    let current = el;
+    while (current) {
+      const descriptor = Object.getOwnPropertyDescriptor(current, 'value');
+      if (descriptor?.set) return descriptor.set;
+      current = Object.getPrototypeOf(current);
+    }
+    return null;
+  }
+
+  function getFrameIdentifier() {
+    if (window.top === window) return '';
+    return window.location.href;
+  }
+
+  function markFrameFields(fields) {
+    const frame = getFrameIdentifier();
+    return fields.map(field => ({
+      ...field,
+      frame
+    }));
+  }
+
+  function getFrameFields(fields) {
+    const frame = getFrameIdentifier();
+    return fields.filter(field => (field.frame || '') === frame);
+  }
+
+  async function getSavedDataWithFrameFields(pageKey) {
+    const savedData = await FormVaultStorage.getForm(pageKey);
+    if (!savedData || !savedData.fields) return savedData;
+
+    try {
+      if (window.top === window && chrome.runtime && chrome.runtime.sendMessage) {
+        const response = await chrome.runtime.sendMessage({
+          action: 'getFrameFormFields',
+          pageKey,
+          frameId
+        });
+
+        if (response && Array.isArray(response.fields) && response.fields.length > 0) {
+          return {
+            ...savedData,
+            fields: [...savedData.fields, ...response.fields]
+          };
+        }
+      }
+    } catch (e) {
+      // Frames may be unavailable; restore whatever was saved in this context.
+    }
+
+    return savedData;
+  }
+
+  function findLightningOptionLabel(el, value) {
+    const options = el.options || el.getAttribute('options');
+    if (!Array.isArray(options)) {
+      const optionEl = queryComposed(el, LIGHTNING_OPTION_SELECTOR + `[data-value="${cssEscape(String(value))}"]`);
+      return optionEl ? optionEl.textContent.trim() : '';
+    }
+
+    const match = options.find(option => String(option.value) === String(value));
+    return match ? match.label || match.text || '' : '';
+  }
+
+  function restoreLightningCombobox(el, fieldData) {
+    const inputButton = queryComposed(el, LIGHTNING_INPUT_BUTTON_SELECTOR);
+    if (inputButton && inputButton.getAttribute('aria-expanded') !== 'true') {
+      inputButton.click();
+    }
+
+    const optionEl = queryComposed(el, LIGHTNING_OPTION_SELECTOR + `[data-value="${cssEscape(String(fieldData.value))}"]`);
+    if (optionEl) {
+      optionEl.click();
+    }
+
+    const nativeSetter = getCustomElementValueSetter(el);
+    if (nativeSetter) {
+      nativeSetter.call(el, fieldData.value);
+    } else {
+      el.value = fieldData.value;
+    }
+
+    const label = fieldData.displayValue || findLightningOptionLabel(el, fieldData.value);
+    if (label) {
+      const valueEl = queryComposed(el, LIGHTNING_INPUT_VALUE_SELECTOR);
+
+      if (valueEl) valueEl.textContent = label;
+      if (inputButton) inputButton.setAttribute('data-value', label);
+    }
+
+    const changeEvent = new CustomEvent('change', {
+      bubbles: true,
+      composed: true,
+      detail: { value: fieldData.value }
+    });
+
+    try {
+      Object.defineProperty(changeEvent, 'target', { value: el });
+    } catch (e) {
+      // Browser-managed event target remains available during dispatch.
+    }
+
+    el.dispatchEvent(changeEvent);
+  }
+
   // ==================== RESTORE TOAST ====================
 
   /**
@@ -419,19 +640,19 @@
   function restoreFields(fields) {
     let restored = 0;
 
-    fields.forEach(fieldData => {
+    getFrameFields(fields).forEach(fieldData => {
       let el = null;
 
       // Try selector first
       try {
-        el = document.querySelector(fieldData.selector);
+        el = querySelectorDeep(fieldData.selector);
       } catch (e) {
         // Invalid selector
       }
 
       // Try by name
       if (!el && fieldData.name) {
-        el = document.querySelector(`[name="${cssEscape(fieldData.name)}"]`) ||
+        el = querySelectorDeep(`[name="${cssEscape(fieldData.name)}"]`) ||
              document.getElementById(fieldData.name);
       }
 
@@ -476,12 +697,7 @@
         el.dispatchEvent(new Event('input', { bubbles: true }));
         el.dispatchEvent(new Event('change', { bubbles: true }));
       } else if (fieldData.type === 'lightning-combobox') {
-        el.value = fieldData.value;
-        el.dispatchEvent(new CustomEvent('change', {
-          bubbles: true,
-          composed: true,
-          detail: { value: fieldData.value }
-        }));
+        restoreLightningCombobox(el, fieldData);
       } else {
         // Use the correct native setter for React compatibility
         const proto = el instanceof HTMLTextAreaElement
@@ -505,6 +721,10 @@
     });
 
     return restored;
+  }
+
+  async function restoreSavedDataFromMessage(savedData) {
+    return restoreFields(savedData.fields || []);
   }
 
   /**
@@ -759,7 +979,22 @@
     // Restore button click handler
     restoreBtn.addEventListener('click', () => {
       clearTimeout(autoDismissTimer);
-      const restored = restoreFields(savedData.fields);
+      let restored = restoreFields(savedData.fields);
+
+      if (window.top === window && chrome.runtime && chrome.runtime.sendMessage) {
+        chrome.runtime.sendMessage({
+          action: 'restoreFrameForms',
+          pageKey: generateTopPageKey(),
+          savedData
+        }).then(response => {
+          if (!response || typeof response.restored !== 'number') return;
+          restored += response.restored;
+          successMsg.textContent = 'Restored ' + restored + ' field' +
+            (restored !== 1 ? 's' : '') + ' successfully!';
+        }).catch(() => {
+          // Frames may be unavailable; keep the top-frame restore result.
+        });
+      }
 
       // Replace actions with success message
       while (actionsDiv.firstChild) {
@@ -789,6 +1024,7 @@
     if (mutationObserver) mutationObserver.disconnect();
 
     let pendingScan = false;
+    const trackedCustomSelector = Array.from(TRACKED_CUSTOM_ELEMENTS).join(',');
 
     mutationObserver = new MutationObserver((mutations) => {
       if (pendingScan) return;
@@ -807,7 +1043,7 @@
 
           if (node.querySelectorAll) {
             const fields = node.querySelectorAll(
-              'input, textarea, select, [contenteditable="true"], lightning-combobox'
+              `input, textarea, select, [contenteditable="true"], ${trackedCustomSelector}`
             );
             if (fields.length > 0) {
               hasNewFields = true;
@@ -900,8 +1136,8 @@
 
       // Check for saved data and show restore toast.
       // Uses the user's retention setting instead of a hardcoded max age.
-      const pageKey = generatePageKey();
-      const savedData = await FormVaultStorage.getForm(pageKey);
+      const pageKey = generateTopPageKey();
+      const savedData = await getSavedDataWithFrameFields(pageKey);
 
       if (savedData && savedData.fields.length > 0) {
         const retentionDays = settings.retentionDays;
@@ -926,4 +1162,21 @@
   } else {
     init();
   }
+
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message.action === 'collectFrameFormFields') {
+      const fields = markFrameFields(collectFormData());
+      sendResponse({ frameId, fields });
+      return false;
+    }
+
+    if (message.action === 'restoreSavedFrameForms') {
+      restoreSavedDataFromMessage(message.savedData).then(restored => {
+        sendResponse({ restored });
+      });
+      return true;
+    }
+
+    return false;
+  });
 })();

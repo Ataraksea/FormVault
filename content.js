@@ -128,7 +128,7 @@
         }
       }
       parts.unshift(selector);
-      current = current.parentElement;
+      current = getComposedParent(current);
       depth++;
     }
     return parts.join(' > ');
@@ -422,6 +422,13 @@
     }
 
     search(document);
+    if (!found) {
+      walkElements(document, el => {
+        if (!found && getUniqueSelector(el) === selector) {
+          found = el;
+        }
+      });
+    }
     return found;
   }
 

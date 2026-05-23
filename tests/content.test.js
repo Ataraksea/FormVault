@@ -497,7 +497,7 @@ describe('collectFormData', () => {
 
     expect(fields).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        selector: 'lightning-combobox',
+        selector: 'div > lightning-combobox',
         name: 'progress',
         label: 'Status',
         type: 'lightning-combobox',
@@ -579,7 +579,7 @@ describe('restoreFields', () => {
     });
 
     const restored = contentFns.restoreFields([{
-      selector: 'lightning-combobox',
+      selector: 'div > lightning-combobox',
       name: 'progress',
       type: 'lightning-combobox',
       value: 'finished'

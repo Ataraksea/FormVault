@@ -55,7 +55,7 @@ beforeAll(() => {
     'return { generatePageKey, generateTopPageKey, isSensitiveField, getUniqueSelector, getXPath, ' +
     'getFieldLabel, getFieldValue, isValidFaviconUrl, findFormFields, ' +
     'isTrackableField, timeAgo, collectFormData, restoreFields, querySelectorDeep, ' +
-    'getLightningComboboxDisplayText };'
+    'getLightningComboboxDisplayText, markFrameFields };'
   );
 
   contentFns = wrapper();
@@ -548,6 +548,25 @@ describe('collectFormData', () => {
 
     combobox.remove();
   });
+
+  test('marks collected fields with current frame identifier', () => {
+    const input = document.createElement('input');
+    input.name = 'firstName';
+    input.value = 'Alex';
+    document.body.appendChild(input);
+
+    const fields = contentFns.markFrameFields(contentFns.collectFormData());
+
+    expect(fields).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'firstName',
+        value: 'Alex',
+        frame: ''
+      })
+    ]));
+
+    input.remove();
+  });
 });
 
 // ==================== restoreFields ====================
@@ -665,6 +684,42 @@ describe('restoreFields', () => {
     expect(value.textContent).toBe('Finished');
     expect(button.getAttribute('data-value')).toBe('Finished');
 
+    combobox.remove();
+  });
+
+  test('skips unframed saved fields in child frames', () => {
+    const combobox = document.createElement('lightning-combobox');
+    combobox.name = 'progress';
+    combobox.value = 'inProgress';
+    document.body.appendChild(combobox);
+
+    const originalTop = window.top;
+    const originalLocation = window.location;
+    const frameTop = {};
+
+    Object.defineProperty(window, 'top', {
+      configurable: true,
+      value: frameTop
+    });
+    delete window.location;
+    window.location = new URL('https://developer.salesforce.com/playground/lwc/lightning/combobox.html');
+
+    const restored = contentFns.restoreFields([{
+      selector: 'body > lightning-combobox',
+      name: 'progress',
+      type: 'lightning-combobox',
+      value: 'finished'
+    }]);
+
+    expect(restored).toBe(0);
+    expect(combobox.value).toBe('inProgress');
+
+    Object.defineProperty(window, 'top', {
+      configurable: true,
+      value: originalTop
+    });
+    delete window.location;
+    window.location = originalLocation;
     combobox.remove();
   });
 });

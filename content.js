@@ -391,7 +391,7 @@
       url: window.location.href,
       title: document.title || window.location.hostname,
       favicon: favicon,
-      fields: fields
+      fields: markFrameFields(fields)
     };
 
     try {
@@ -493,6 +493,14 @@
   function getFrameIdentifier() {
     if (window.top === window) return '';
     return window.location.href;
+  }
+
+  function markFrameFields(fields) {
+    const frame = getFrameIdentifier();
+    return fields.map(field => ({
+      ...field,
+      frame
+    }));
   }
 
   function getFrameFields(fields) {
@@ -1108,10 +1116,7 @@
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.action === 'collectFrameFormFields') {
-      const fields = collectFormData().map(field => ({
-        ...field,
-        frame: getFrameIdentifier()
-      }));
+      const fields = markFrameFields(collectFormData());
       sendResponse({ frameId, fields });
       return false;
     }

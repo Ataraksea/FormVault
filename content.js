@@ -18,6 +18,9 @@
     'text', 'email', 'tel', 'number', 'url', 'search',
     'date', 'datetime-local', 'month', 'week', 'time'
   ]);
+  const TRACKED_CUSTOM_ELEMENTS = new Set([
+    'lightning-combobox'
+  ]);
 
   // Sensitive field patterns — never save these
   const SENSITIVE_PATTERNS = /password|passwd|pwd|ssn|social.?security|cc[-_]?num|card[-_]?number|cvv|cvc|ccv|credit.?card|expir|routing.?number|account.?number|pin[-_]?code/i;
@@ -84,6 +87,10 @@
     return identifiers.some(id => SENSITIVE_PATTERNS.test(id));
   }
 
+  function isTrackedCustomElement(el) {
+    return TRACKED_CUSTOM_ELEMENTS.has(el.tagName.toLowerCase());
+  }
+
   /**
    * Generate a unique CSS selector for an element
    */
@@ -91,8 +98,9 @@
     if (el.id) return `#${cssEscape(el.id)}`;
 
     const tag = el.tagName.toLowerCase();
-    if (el.name) {
-      const selector = `${tag}[name="${cssEscape(el.name)}"]`;
+    const name = el.name || el.getAttribute('name');
+    if (name) {
+      const selector = `${tag}[name="${cssEscape(name)}"]`;
       if (document.querySelectorAll(selector).length === 1) return selector;
     }
 
@@ -172,6 +180,8 @@
     // Check placeholder
     if (el.placeholder) return el.placeholder;
 
+    if (el.label) return el.label;
+
     // Fall back to name attribute, prettified
     if (el.name) {
       return el.name
@@ -190,16 +200,23 @@
     if (el.getAttribute('contenteditable') === 'true') {
       return el.textContent || '';
     }
+    if (el instanceof HTMLInputElement && el.type === 'checkbox') {
+      return Boolean(el.checked);
+    }
     if (el.tagName === 'SELECT') {
       if (el.multiple) {
         return Array.from(el.selectedOptions).map(option => option.value);
       }
       return el.value;
     }
+    if (isTrackedCustomElement(el)) {
+      return el.value || '';
+    }
     return el.value || '';
   }
 
   function hasSavableValue(value) {
+    if (typeof value === 'boolean') return true;
     if (Array.isArray(value)) return value.length >= MIN_FIELD_LENGTH;
     return value.length >= MIN_FIELD_LENGTH;
   }
@@ -225,7 +242,7 @@
     // Standard inputs
     document.querySelectorAll('input').forEach(el => {
       const type = (el.type || 'text').toLowerCase();
-      if (!TRACKED_INPUT_TYPES.has(type)) return;
+      if (type !== 'checkbox' && !TRACKED_INPUT_TYPES.has(type)) return;
       if (isSensitiveField(el)) return;
       fields.push(el);
     });
@@ -245,6 +262,11 @@
     // Contenteditable elements
     document.querySelectorAll('[contenteditable="true"]').forEach(el => {
       if (el.tagName === 'BODY') return;
+      fields.push(el);
+    });
+
+    document.querySelectorAll(Array.from(TRACKED_CUSTOM_ELEMENTS).join(',')).forEach(el => {
+      if (isSensitiveField(el)) return;
       fields.push(el);
     });
 
@@ -272,10 +294,12 @@
       fieldData.push({
         selector: getUniqueSelector(el),
         xpath: getXPath(el),
-        name: el.name || el.id || '',
+        name: el.name || el.getAttribute('name') || el.id || '',
         label: getFieldLabel(el),
         type: el.getAttribute('contenteditable') === 'true'
           ? 'contenteditable'
+          : isTrackedCustomElement(el)
+            ? el.tagName.toLowerCase()
           : el.tagName.toLowerCase() === 'select'
             ? 'select'
             : (el.type || 'text'),
@@ -440,6 +464,24 @@
           el.value = fieldData.value;
         }
         el.dispatchEvent(new Event('change', { bubbles: true }));
+      } else if (fieldData.type === 'checkbox') {
+        const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'checked')?.set;
+
+        if (nativeSetter) {
+          nativeSetter.call(el, Boolean(fieldData.value));
+        } else {
+          el.checked = Boolean(fieldData.value);
+        }
+
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+      } else if (fieldData.type === 'lightning-combobox') {
+        el.value = fieldData.value;
+        el.dispatchEvent(new CustomEvent('change', {
+          bubbles: true,
+          composed: true,
+          detail: { value: fieldData.value }
+        }));
       } else {
         // Use the correct native setter for React compatibility
         const proto = el instanceof HTMLTextAreaElement
@@ -765,7 +807,7 @@
 
           if (node.querySelectorAll) {
             const fields = node.querySelectorAll(
-              'input, textarea, select, [contenteditable="true"]'
+              'input, textarea, select, [contenteditable="true"], lightning-combobox'
             );
             if (fields.length > 0) {
               hasNewFields = true;
@@ -798,10 +840,11 @@
   function isTrackableField(el) {
     if (el.tagName === 'INPUT') {
       const type = (el.type || 'text').toLowerCase();
-      return TRACKED_INPUT_TYPES.has(type) && !isSensitiveField(el);
+      return (type === 'checkbox' || TRACKED_INPUT_TYPES.has(type)) && !isSensitiveField(el);
     }
     if (el.tagName === 'TEXTAREA') return !isSensitiveField(el);
     if (el.tagName === 'SELECT') return !isSensitiveField(el);
+    if (isTrackedCustomElement(el)) return !isSensitiveField(el);
     if (el.getAttribute && el.getAttribute('contenteditable') === 'true') {
       return el.tagName !== 'BODY';
     }

@@ -54,7 +54,7 @@ beforeAll(() => {
     body + '\n' +
     'return { generatePageKey, isSensitiveField, getUniqueSelector, getXPath, ' +
     'getFieldLabel, getFieldValue, isValidFaviconUrl, findFormFields, ' +
-    'isTrackableField, timeAgo, collectFormData };'
+    'isTrackableField, timeAgo, collectFormData, restoreFields };'
   );
 
   contentFns = wrapper();
@@ -327,6 +327,13 @@ describe('getFieldValue', () => {
     expect(contentFns.getFieldValue(input)).toBe('hello');
   });
 
+  test('returns checkbox checked state', () => {
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.checked = true;
+    expect(contentFns.getFieldValue(input)).toBe(true);
+  });
+
   test('returns textContent for contenteditable', () => {
     const div = document.createElement('div');
     div.setAttribute('contenteditable', 'true');
@@ -357,6 +364,12 @@ describe('getFieldValue', () => {
     });
 
     expect(contentFns.getFieldValue(select)).toEqual(['red', 'blue']);
+  });
+
+  test('returns lightning-combobox value', () => {
+    const combobox = document.createElement('lightning-combobox');
+    combobox.value = 'in-progress';
+    expect(contentFns.getFieldValue(combobox)).toBe('in-progress');
   });
 
   test('returns empty string for empty input', () => {
@@ -428,6 +441,94 @@ describe('collectFormData', () => {
 
     select.remove();
   });
+
+  test('saves unchecked checkbox fields', () => {
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.name = 'subscribe';
+    input.checked = false;
+    document.body.appendChild(input);
+
+    const fields = contentFns.collectFormData();
+
+    expect(fields).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'subscribe',
+        type: 'checkbox',
+        value: false
+      })
+    ]));
+
+    input.remove();
+  });
+
+  test('saves lightning-combobox fields', () => {
+    const combobox = document.createElement('lightning-combobox');
+    combobox.name = 'status';
+    combobox.label = 'Status';
+    combobox.value = 'finished';
+    document.body.appendChild(combobox);
+
+    const fields = contentFns.collectFormData();
+
+    expect(fields).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'status',
+        label: 'Status',
+        type: 'lightning-combobox',
+        value: 'finished'
+      })
+    ]));
+
+    combobox.remove();
+  });
+});
+
+// ==================== restoreFields ====================
+
+describe('restoreFields', () => {
+  test('restores checkbox checked state', () => {
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.name = 'subscribe';
+    document.body.appendChild(input);
+
+    const restored = contentFns.restoreFields([{
+      selector: 'input[name="subscribe"]',
+      name: 'subscribe',
+      type: 'checkbox',
+      value: true
+    }]);
+
+    expect(restored).toBe(1);
+    expect(input.checked).toBe(true);
+
+    input.remove();
+  });
+
+  test('restores lightning-combobox value with change detail', () => {
+    const combobox = document.createElement('lightning-combobox');
+    combobox.name = 'status';
+    document.body.appendChild(combobox);
+
+    let detailValue = '';
+    combobox.addEventListener('change', event => {
+      detailValue = event.detail.value;
+    });
+
+    const restored = contentFns.restoreFields([{
+      selector: 'body > lightning-combobox',
+      name: 'status',
+      type: 'lightning-combobox',
+      value: 'finished'
+    }]);
+
+    expect(restored).toBe(1);
+    expect(combobox.value).toBe('finished');
+    expect(detailValue).toBe('finished');
+
+    combobox.remove();
+  });
 });
 
 // ==================== isValidFaviconUrl ====================
@@ -473,10 +574,10 @@ describe('isTrackableField', () => {
     expect(contentFns.isTrackableField(input)).toBe(true);
   });
 
-  test('does not track checkbox input', () => {
+  test('tracks checkbox input', () => {
     const input = document.createElement('input');
     input.type = 'checkbox';
-    expect(contentFns.isTrackableField(input)).toBe(false);
+    expect(contentFns.isTrackableField(input)).toBe(true);
   });
 
   test('does not track password input (sensitive)', () => {
@@ -499,6 +600,11 @@ describe('isTrackableField', () => {
     const div = document.createElement('div');
     div.setAttribute('contenteditable', 'true');
     expect(contentFns.isTrackableField(div)).toBe(true);
+  });
+
+  test('tracks lightning-combobox', () => {
+    const el = document.createElement('lightning-combobox');
+    expect(contentFns.isTrackableField(el)).toBe(true);
   });
 
   test('does not track contenteditable body', () => {
@@ -572,13 +678,13 @@ describe('findFormFields', () => {
     input.remove();
   });
 
-  test('excludes checkbox inputs', () => {
+  test('finds checkbox inputs', () => {
     const input = document.createElement('input');
     input.type = 'checkbox';
     document.body.appendChild(input);
 
     const fields = contentFns.findFormFields();
-    expect(fields).not.toContain(input);
+    expect(fields).toContain(input);
 
     input.remove();
   });
@@ -612,5 +718,15 @@ describe('findFormFields', () => {
     expect(fields).toContain(div);
 
     div.remove();
+  });
+
+  test('finds lightning-combobox elements', () => {
+    const el = document.createElement('lightning-combobox');
+    document.body.appendChild(el);
+
+    const fields = contentFns.findFormFields();
+    expect(fields).toContain(el);
+
+    el.remove();
   });
 });

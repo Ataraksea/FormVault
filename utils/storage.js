@@ -58,8 +58,19 @@ const FormVaultStorage = (() => {
       }
 
       const forms = await getAllForms();
+      const existing = forms[pageKey] || {};
+      const existingFields = Array.isArray(existing.fields) ? existing.fields : [];
+      const incomingFields = Array.isArray(formData.fields) ? formData.fields : [];
+      const incomingFrames = new Set(incomingFields.map(field => field.frame || ''));
+      const fields = [
+        ...existingFields.filter(field => !incomingFrames.has(field.frame || '')),
+        ...incomingFields
+      ];
+
       forms[pageKey] = {
+        ...existing,
         ...formData,
+        fields,
         savedAt: Date.now()
       };
       await chrome.storage.local.set({ [STORAGE_KEY]: forms });

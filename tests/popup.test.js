@@ -186,6 +186,11 @@ describe('formatFieldValue', () => {
     expect(popupFns.formatFieldValue(['red', 'blue'])).toBe('red, blue');
   });
 
+  test('formats checkbox values', () => {
+    expect(popupFns.formatFieldValue(true)).toBe('Checked');
+    expect(popupFns.formatFieldValue(false)).toBe('Unchecked');
+  });
+
   test('returns empty string for null values', () => {
     expect(popupFns.formatFieldValue(null)).toBe('');
   });

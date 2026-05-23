@@ -191,9 +191,17 @@
       return el.textContent || '';
     }
     if (el.tagName === 'SELECT') {
+      if (el.multiple) {
+        return Array.from(el.selectedOptions).map(option => option.value);
+      }
       return el.value;
     }
     return el.value || '';
+  }
+
+  function hasSavableValue(value) {
+    if (Array.isArray(value)) return value.length >= MIN_FIELD_LENGTH;
+    return value.length >= MIN_FIELD_LENGTH;
   }
 
   /**
@@ -259,7 +267,7 @@
 
     fields.forEach(el => {
       const value = getFieldValue(el);
-      if (value.length < MIN_FIELD_LENGTH) return;
+      if (!hasSavableValue(value)) return;
 
       fieldData.push({
         selector: getUniqueSelector(el),
@@ -424,7 +432,13 @@
         el.dispatchEvent(new Event('input', { bubbles: true }));
         el.dispatchEvent(new Event('change', { bubbles: true }));
       } else if (fieldData.type === 'select') {
-        el.value = fieldData.value;
+        if (el.multiple && Array.isArray(fieldData.value)) {
+          Array.from(el.options).forEach(option => {
+            option.selected = fieldData.value.includes(option.value);
+          });
+        } else {
+          el.value = fieldData.value;
+        }
         el.dispatchEvent(new Event('change', { bubbles: true }));
       } else {
         // Use the correct native setter for React compatibility

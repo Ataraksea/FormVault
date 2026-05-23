@@ -79,7 +79,7 @@ beforeAll(() => {
 
   const wrapper = new Function(
     body + '\n' +
-    'return { truncate, truncateUrl, timeAgo, copyFormData, updateFormCount };'
+    'return { truncate, truncateUrl, timeAgo, formatFieldValue, copyFormData, updateFormCount };'
   );
 
   popupFns = wrapper();
@@ -175,6 +175,22 @@ describe('timeAgo', () => {
   });
 });
 
+// ==================== formatFieldValue ====================
+
+describe('formatFieldValue', () => {
+  test('returns strings unchanged', () => {
+    expect(popupFns.formatFieldValue('Alice')).toBe('Alice');
+  });
+
+  test('joins array values', () => {
+    expect(popupFns.formatFieldValue(['red', 'blue'])).toBe('red, blue');
+  });
+
+  test('returns empty string for null values', () => {
+    expect(popupFns.formatFieldValue(null)).toBe('');
+  });
+});
+
 // ==================== copyFormData ====================
 
 describe('copyFormData', () => {
@@ -223,6 +239,18 @@ describe('copyFormData', () => {
     expect(written).toContain('https://example.com');
     expect(written).toContain('Name: Alice');
     expect(written).toContain('Email: alice@test.com');
+  });
+
+  test('formats multi-select values when copying', async () => {
+    const form = {
+      title: 'Preferences',
+      url: 'https://example.com',
+      fields: [{ label: 'Colors', value: ['red', 'blue'] }]
+    };
+    await popupFns.copyFormData(form);
+
+    const written = navigator.clipboard.writeText.mock.calls[0][0];
+    expect(written).toContain('Colors: red, blue');
   });
 
   test('returns false when fields are empty', async () => {

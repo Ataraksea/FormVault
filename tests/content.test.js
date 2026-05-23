@@ -344,9 +344,89 @@ describe('getFieldValue', () => {
     expect(contentFns.getFieldValue(select)).toBe('opt1');
   });
 
+  test('returns selected values for multi-select', () => {
+    const select = document.createElement('select');
+    select.multiple = true;
+
+    ['red', 'green', 'blue'].forEach((value, index) => {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = value;
+      option.selected = index !== 1;
+      select.appendChild(option);
+    });
+
+    expect(contentFns.getFieldValue(select)).toEqual(['red', 'blue']);
+  });
+
   test('returns empty string for empty input', () => {
     const input = document.createElement('input');
     expect(contentFns.getFieldValue(input)).toBe('');
+  });
+});
+
+// ==================== collectFormData ====================
+
+describe('collectFormData', () => {
+  test('saves single-select dropdown fields', () => {
+    const label = document.createElement('label');
+    label.setAttribute('for', 'country');
+    label.textContent = 'Country';
+
+    const select = document.createElement('select');
+    select.id = 'country';
+    select.name = 'country';
+
+    const option = document.createElement('option');
+    option.value = 'ca';
+    option.textContent = 'Canada';
+    select.appendChild(option);
+    select.value = 'ca';
+
+    document.body.appendChild(label);
+    document.body.appendChild(select);
+
+    const fields = contentFns.collectFormData();
+
+    expect(fields).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'country',
+        label: 'Country',
+        type: 'select',
+        value: 'ca'
+      })
+    ]));
+
+    label.remove();
+    select.remove();
+  });
+
+  test('saves multi-select dropdown fields', () => {
+    const select = document.createElement('select');
+    select.name = 'colors';
+    select.multiple = true;
+
+    ['red', 'green', 'blue'].forEach((value, index) => {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = value;
+      option.selected = index !== 1;
+      select.appendChild(option);
+    });
+
+    document.body.appendChild(select);
+
+    const fields = contentFns.collectFormData();
+
+    expect(fields).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'colors',
+        type: 'select',
+        value: ['red', 'blue']
+      })
+    ]));
+
+    select.remove();
   });
 });
 

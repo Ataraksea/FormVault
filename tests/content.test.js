@@ -329,6 +329,20 @@ describe('getFieldLabel', () => {
     expect(contentFns.getFieldLabel(input)).toBe('email');
     input.remove();
   });
+
+  test('uses string custom element labels only', () => {
+    const combobox = document.createElement('lightning-combobox');
+    combobox.setAttribute('label', 'Status');
+    Object.defineProperty(combobox, 'label', {
+      configurable: true,
+      value: {}
+    });
+    document.body.appendChild(combobox);
+
+    expect(contentFns.getFieldLabel(combobox)).toBe('Status');
+
+    combobox.remove();
+  });
 });
 
 // ==================== getFieldValue ====================
@@ -383,6 +397,16 @@ describe('getFieldValue', () => {
     const combobox = document.createElement('lightning-combobox');
     combobox.value = 'in-progress';
     expect(contentFns.getFieldValue(combobox)).toBe('in-progress');
+  });
+
+  test('ignores non-string lightning-combobox values', () => {
+    const combobox = document.createElement('lightning-combobox');
+    Object.defineProperty(combobox, 'value', {
+      configurable: true,
+      value: { selected: 'finished' }
+    });
+
+    expect(contentFns.getFieldValue(combobox)).toBe('');
   });
 
   test('returns empty string for empty input', () => {

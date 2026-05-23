@@ -195,6 +195,10 @@
    * Extract human-readable label for a field
    */
   function getFieldLabel(el) {
+    if (isTrackedCustomElement(el)) {
+      return typeof el.label === 'string' ? el.label : (el.getAttribute('label') || '');
+    }
+
     // Check associated <label>
     if (el.id) {
       const label = document.querySelector(`label[for="${cssEscape(el.id)}"]`);
@@ -242,6 +246,10 @@
     if (el.getAttribute('contenteditable') === 'true') {
       return el.textContent || '';
     }
+    if (isTrackedCustomElement(el)) {
+      const value = el.value;
+      return typeof value === 'string' ? value : '';
+    }
     if (el instanceof HTMLInputElement && el.type === 'checkbox') {
       return Boolean(el.checked);
     }
@@ -250,9 +258,6 @@
         return Array.from(el.selectedOptions).map(option => option.value);
       }
       return el.value;
-    }
-    if (isTrackedCustomElement(el)) {
-      return el.value || '';
     }
     return el.value || '';
   }

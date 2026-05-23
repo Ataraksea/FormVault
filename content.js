@@ -40,6 +40,10 @@
     '__cf_chl_jschl_tk__', '__cf_chl_tk'
   ]);
 
+  const frameId = typeof crypto !== 'undefined' && crypto.randomUUID
+    ? crypto.randomUUID()
+    : String(Date.now()) + '-' + Math.random().toString(36).slice(2);
+
   // CSS.escape polyfill for older environments
   const cssEscape = typeof CSS !== 'undefined' && CSS.escape
     ? CSS.escape.bind(CSS)
@@ -64,6 +68,37 @@
     params.sort();
     const paramStr = params.toString();
     return url.origin + url.pathname + (paramStr ? '?' + paramStr : '');
+  }
+
+  function generateTopPageKey() {
+    try {
+      if (window.top !== window && document.referrer) {
+        const referrer = new URL(document.referrer);
+        const current = new URL(window.location.href);
+        const params = new URLSearchParams(referrer.search);
+        const currentParams = new URLSearchParams(current.search);
+
+        for (const [key, value] of currentParams) {
+          if (!params.has(key)) {
+            params.set(key, value);
+          }
+        }
+
+        const strippedParams = new URLSearchParams();
+        for (const [key, value] of params) {
+          if (!STRIP_PARAMS.has(key)) {
+            strippedParams.set(key, value);
+          }
+        }
+        strippedParams.sort();
+        const paramStr = strippedParams.toString();
+        return referrer.origin + referrer.pathname + (paramStr ? '?' + paramStr : '');
+      }
+    } catch (e) {
+      // Fall back to the current frame URL when parent/referrer access fails.
+    }
+
+    return generatePageKey();
   }
 
   // ==================== FIELD DETECTION & IDENTIFICATION ====================
@@ -222,6 +257,18 @@
     return el.value || '';
   }
 
+  function getLightningComboboxDisplayText(el) {
+    if (!isTrackedCustomElement(el) || !el.shadowRoot) {
+      return '';
+    }
+
+    const baseCombobox = el.shadowRoot.querySelector('lightning-base-combobox');
+    if (!baseCombobox || !baseCombobox.shadowRoot) return '';
+
+    const valueEl = baseCombobox.shadowRoot.querySelector('[part="input-button-value"]');
+    return valueEl ? valueEl.textContent.trim() : '';
+  }
+
   function hasSavableValue(value) {
     if (typeof value === 'boolean') return true;
     if (Array.isArray(value)) return value.length >= MIN_FIELD_LENGTH;
@@ -309,7 +356,8 @@
           : el.tagName.toLowerCase() === 'select'
             ? 'select'
             : (el.type || 'text'),
-        value: value
+        value: value,
+        displayValue: isTrackedCustomElement(el) ? getLightningComboboxDisplayText(el) : ''
       });
     });
 
@@ -325,7 +373,7 @@
     const fields = collectFormData();
     if (fields.length === 0) return;
 
-    const pageKey = generatePageKey();
+    const pageKey = generateTopPageKey();
 
     // Try to get favicon (validated)
     let favicon = '';
@@ -442,6 +490,77 @@
     return null;
   }
 
+  function getFrameIdentifier() {
+    if (window.top === window) return '';
+    return window.location.href;
+  }
+
+  function getFrameFields(fields) {
+    const frame = getFrameIdentifier();
+    return fields.filter(field => (field.frame || '') === frame);
+  }
+
+  async function getSavedDataWithFrameFields(pageKey) {
+    const savedData = await FormVaultStorage.getForm(pageKey);
+    if (!savedData || !savedData.fields) return savedData;
+
+    try {
+      if (window.top === window && chrome.runtime && chrome.runtime.sendMessage) {
+        const response = await chrome.runtime.sendMessage({
+          action: 'getFrameFormFields',
+          pageKey,
+          frameId
+        });
+
+        if (response && Array.isArray(response.fields) && response.fields.length > 0) {
+          return {
+            ...savedData,
+            fields: [...savedData.fields, ...response.fields]
+          };
+        }
+      }
+    } catch (e) {
+      // Frames may be unavailable; restore whatever was saved in this context.
+    }
+
+    return savedData;
+  }
+
+  function findLightningOptionLabel(el, value) {
+    const options = el.options || el.getAttribute('options');
+    if (!Array.isArray(options)) return '';
+
+    const match = options.find(option => String(option.value) === String(value));
+    return match ? match.label || match.text || '' : '';
+  }
+
+  function restoreLightningCombobox(el, fieldData) {
+    const nativeSetter = getCustomElementValueSetter(el);
+    if (nativeSetter) {
+      nativeSetter.call(el, fieldData.value);
+    } else {
+      el.value = fieldData.value;
+    }
+
+    const label = fieldData.displayValue || findLightningOptionLabel(el, fieldData.value);
+    if (label && el.shadowRoot) {
+      const baseCombobox = el.shadowRoot.querySelector('lightning-base-combobox');
+      if (baseCombobox && baseCombobox.shadowRoot) {
+        const valueEl = baseCombobox.shadowRoot.querySelector('[part="input-button-value"]');
+        const inputButton = baseCombobox.shadowRoot.querySelector('[part="input-button"]');
+
+        if (valueEl) valueEl.textContent = label;
+        if (inputButton) inputButton.setAttribute('data-value', label);
+      }
+    }
+
+    el.dispatchEvent(new CustomEvent('change', {
+      bubbles: true,
+      composed: true,
+      detail: { value: fieldData.value }
+    }));
+  }
+
   // ==================== RESTORE TOAST ====================
 
   /**
@@ -464,7 +583,7 @@
   function restoreFields(fields) {
     let restored = 0;
 
-    fields.forEach(fieldData => {
+    getFrameFields(fields).forEach(fieldData => {
       let el = null;
 
       // Try selector first
@@ -521,17 +640,7 @@
         el.dispatchEvent(new Event('input', { bubbles: true }));
         el.dispatchEvent(new Event('change', { bubbles: true }));
       } else if (fieldData.type === 'lightning-combobox') {
-        const nativeSetter = getCustomElementValueSetter(el);
-        if (nativeSetter) {
-          nativeSetter.call(el, fieldData.value);
-        } else {
-          el.value = fieldData.value;
-        }
-        el.dispatchEvent(new CustomEvent('change', {
-          bubbles: true,
-          composed: true,
-          detail: { value: fieldData.value }
-        }));
+        restoreLightningCombobox(el, fieldData);
       } else {
         // Use the correct native setter for React compatibility
         const proto = el instanceof HTMLTextAreaElement
@@ -555,6 +664,10 @@
     });
 
     return restored;
+  }
+
+  async function restoreSavedDataFromMessage(savedData) {
+    return restoreFields(savedData.fields || []);
   }
 
   /**
@@ -809,7 +922,22 @@
     // Restore button click handler
     restoreBtn.addEventListener('click', () => {
       clearTimeout(autoDismissTimer);
-      const restored = restoreFields(savedData.fields);
+      let restored = restoreFields(savedData.fields);
+
+      if (window.top === window && chrome.runtime && chrome.runtime.sendMessage) {
+        chrome.runtime.sendMessage({
+          action: 'restoreFrameForms',
+          pageKey: generateTopPageKey(),
+          savedData
+        }).then(response => {
+          if (!response || typeof response.restored !== 'number') return;
+          restored += response.restored;
+          successMsg.textContent = 'Restored ' + restored + ' field' +
+            (restored !== 1 ? 's' : '') + ' successfully!';
+        }).catch(() => {
+          // Frames may be unavailable; keep the top-frame restore result.
+        });
+      }
 
       // Replace actions with success message
       while (actionsDiv.firstChild) {
@@ -951,8 +1079,8 @@
 
       // Check for saved data and show restore toast.
       // Uses the user's retention setting instead of a hardcoded max age.
-      const pageKey = generatePageKey();
-      const savedData = await FormVaultStorage.getForm(pageKey);
+      const pageKey = generateTopPageKey();
+      const savedData = await getSavedDataWithFrameFields(pageKey);
 
       if (savedData && savedData.fields.length > 0) {
         const retentionDays = settings.retentionDays;
@@ -977,4 +1105,24 @@
   } else {
     init();
   }
+
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message.action === 'collectFrameFormFields') {
+      const fields = collectFormData().map(field => ({
+        ...field,
+        frame: getFrameIdentifier()
+      }));
+      sendResponse({ frameId, fields });
+      return false;
+    }
+
+    if (message.action === 'restoreSavedFrameForms') {
+      restoreSavedDataFromMessage(message.savedData).then(restored => {
+        sendResponse({ restored });
+      });
+      return true;
+    }
+
+    return false;
+  });
 })();

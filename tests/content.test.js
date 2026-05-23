@@ -52,9 +52,10 @@ beforeAll(() => {
   // Execute and collect testable functions
   const wrapper = new Function(
     body + '\n' +
-    'return { generatePageKey, isSensitiveField, getUniqueSelector, getXPath, ' +
+    'return { generatePageKey, generateTopPageKey, isSensitiveField, getUniqueSelector, getXPath, ' +
     'getFieldLabel, getFieldValue, isValidFaviconUrl, findFormFields, ' +
-    'isTrackableField, timeAgo, collectFormData, restoreFields, querySelectorDeep };'
+    'isTrackableField, timeAgo, collectFormData, restoreFields, querySelectorDeep, ' +
+    'getLightningComboboxDisplayText };'
   );
 
   contentFns = wrapper();
@@ -104,6 +105,18 @@ describe('generatePageKey', () => {
   test('omits query string when all params are stripped', () => {
     setLocation('https://example.com/page?utm_source=x&utm_medium=y');
     expect(contentFns.generatePageKey()).toBe('https://example.com/page');
+  });
+});
+
+describe('generateTopPageKey', () => {
+  test('uses current URL in top frame', () => {
+    delete window.location;
+    window.location = new URL('https://example.com/form?step=2');
+
+    expect(contentFns.generateTopPageKey()).toBe('https://example.com/form?step=2');
+
+    delete window.location;
+    window.location = new URL('about:blank');
   });
 });
 
@@ -507,6 +520,34 @@ describe('collectFormData', () => {
 
     host.remove();
   });
+
+  test('saves lightning-combobox display text when rendered by base combobox', () => {
+    const combobox = document.createElement('lightning-combobox');
+    const root = combobox.attachShadow({ mode: 'open' });
+    const baseCombobox = document.createElement('lightning-base-combobox');
+    const baseRoot = baseCombobox.attachShadow({ mode: 'open' });
+    const value = document.createElement('span');
+    value.setAttribute('part', 'input-button-value');
+    value.textContent = 'Finished';
+    combobox.name = 'progress';
+    combobox.value = 'finished';
+    baseRoot.appendChild(value);
+    root.appendChild(baseCombobox);
+    document.body.appendChild(combobox);
+
+    const fields = contentFns.collectFormData();
+
+    expect(fields).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'progress',
+        type: 'lightning-combobox',
+        value: 'finished',
+        displayValue: 'Finished'
+      })
+    ]));
+
+    combobox.remove();
+  });
 });
 
 // ==================== restoreFields ====================
@@ -591,6 +632,40 @@ describe('restoreFields', () => {
     expect(detailValue).toBe('finished');
 
     host.remove();
+  });
+
+  test('restores lightning-combobox display text rendered by base combobox', () => {
+    const combobox = document.createElement('lightning-combobox');
+    combobox.name = 'progress';
+    combobox.value = 'inProgress';
+
+    const root = combobox.attachShadow({ mode: 'open' });
+    const baseCombobox = document.createElement('lightning-base-combobox');
+    const baseRoot = baseCombobox.attachShadow({ mode: 'open' });
+    const button = document.createElement('button');
+    button.setAttribute('part', 'input-button');
+    const value = document.createElement('span');
+    value.setAttribute('part', 'input-button-value');
+    value.textContent = 'In Progress';
+    button.appendChild(value);
+    baseRoot.appendChild(button);
+    root.appendChild(baseCombobox);
+    document.body.appendChild(combobox);
+
+    const restored = contentFns.restoreFields([{
+      selector: 'body > lightning-combobox',
+      name: 'progress',
+      type: 'lightning-combobox',
+      value: 'finished',
+      displayValue: 'Finished'
+    }]);
+
+    expect(restored).toBe(1);
+    expect(combobox.value).toBe('finished');
+    expect(value.textContent).toBe('Finished');
+    expect(button.getAttribute('data-value')).toBe('Finished');
+
+    combobox.remove();
   });
 });
 

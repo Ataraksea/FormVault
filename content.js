@@ -21,6 +21,9 @@
   const TRACKED_CUSTOM_ELEMENTS = new Set([
     'lightning-combobox'
   ]);
+  const LIGHTNING_INPUT_BUTTON_SELECTOR = '[part="input-button"]';
+  const LIGHTNING_INPUT_VALUE_SELECTOR = '[part="input-button-value"]';
+  const LIGHTNING_OPTION_SELECTOR = 'lightning-base-combobox-item[data-value]';
 
   // Sensitive field patterns — never save these
   const SENSITIVE_PATTERNS = /password|passwd|pwd|ssn|social.?security|cc[-_]?num|card[-_]?number|cvv|cvc|ccv|credit.?card|expir|routing.?number|account.?number|pin[-_]?code/i;
@@ -126,6 +129,30 @@
     return TRACKED_CUSTOM_ELEMENTS.has(el.tagName.toLowerCase());
   }
 
+  function queryComposed(el, selector) {
+    const directMatch = el.matches?.(selector) ? el : null;
+    if (directMatch) return directMatch;
+
+    const lightMatch = el.querySelector(selector);
+    if (lightMatch) return lightMatch;
+
+    function search(root) {
+      const match = root.querySelector(selector);
+      if (match) return match;
+
+      const elements = root.querySelectorAll('*');
+      for (const child of elements) {
+        if (child.shadowRoot) {
+          const nestedMatch = search(child.shadowRoot);
+          if (nestedMatch) return nestedMatch;
+        }
+      }
+      return null;
+    }
+
+    return el.shadowRoot ? search(el.shadowRoot) : null;
+  }
+
   function getComposedParent(el) {
     const root = el.getRootNode && el.getRootNode();
     return el.parentElement || (root instanceof ShadowRoot ? root.host : null);
@@ -196,7 +223,9 @@
    */
   function getFieldLabel(el) {
     if (isTrackedCustomElement(el)) {
-      return typeof el.label === 'string' ? el.label : (el.getAttribute('label') || '');
+      if (typeof el.label === 'string') return el.label;
+      const inputButton = queryComposed(el, LIGHTNING_INPUT_BUTTON_SELECTOR);
+      return el.getAttribute('label') || inputButton?.getAttribute('aria-label') || '';
     }
 
     // Check associated <label>
@@ -248,7 +277,8 @@
     }
     if (isTrackedCustomElement(el)) {
       const value = el.value;
-      return typeof value === 'string' ? value : '';
+      if (typeof value === 'string' && value) return value;
+      return queryComposed(el, LIGHTNING_OPTION_SELECTOR + '[aria-selected="true"]')?.getAttribute('data-value') || '';
     }
     if (el instanceof HTMLInputElement && el.type === 'checkbox') {
       return Boolean(el.checked);
@@ -263,14 +293,11 @@
   }
 
   function getLightningComboboxDisplayText(el) {
-    if (!isTrackedCustomElement(el) || !el.shadowRoot) {
+    if (!isTrackedCustomElement(el)) {
       return '';
     }
 
-    const baseCombobox = el.shadowRoot.querySelector('lightning-base-combobox');
-    if (!baseCombobox || !baseCombobox.shadowRoot) return '';
-
-    const valueEl = baseCombobox.shadowRoot.querySelector('[part="input-button-value"]');
+    const valueEl = queryComposed(el, LIGHTNING_INPUT_VALUE_SELECTOR);
     return valueEl ? valueEl.textContent.trim() : '';
   }
 
@@ -541,13 +568,26 @@
 
   function findLightningOptionLabel(el, value) {
     const options = el.options || el.getAttribute('options');
-    if (!Array.isArray(options)) return '';
+    if (!Array.isArray(options)) {
+      const optionEl = queryComposed(el, LIGHTNING_OPTION_SELECTOR + `[data-value="${cssEscape(String(value))}"]`);
+      return optionEl ? optionEl.textContent.trim() : '';
+    }
 
     const match = options.find(option => String(option.value) === String(value));
     return match ? match.label || match.text || '' : '';
   }
 
   function restoreLightningCombobox(el, fieldData) {
+    const inputButton = queryComposed(el, LIGHTNING_INPUT_BUTTON_SELECTOR);
+    if (inputButton && inputButton.getAttribute('aria-expanded') !== 'true') {
+      inputButton.click();
+    }
+
+    const optionEl = queryComposed(el, LIGHTNING_OPTION_SELECTOR + `[data-value="${cssEscape(String(fieldData.value))}"]`);
+    if (optionEl) {
+      optionEl.click();
+    }
+
     const nativeSetter = getCustomElementValueSetter(el);
     if (nativeSetter) {
       nativeSetter.call(el, fieldData.value);
@@ -556,15 +596,11 @@
     }
 
     const label = fieldData.displayValue || findLightningOptionLabel(el, fieldData.value);
-    if (label && el.shadowRoot) {
-      const baseCombobox = el.shadowRoot.querySelector('lightning-base-combobox');
-      if (baseCombobox && baseCombobox.shadowRoot) {
-        const valueEl = baseCombobox.shadowRoot.querySelector('[part="input-button-value"]');
-        const inputButton = baseCombobox.shadowRoot.querySelector('[part="input-button"]');
+    if (label) {
+      const valueEl = queryComposed(el, LIGHTNING_INPUT_VALUE_SELECTOR);
 
-        if (valueEl) valueEl.textContent = label;
-        if (inputButton) inputButton.setAttribute('data-value', label);
-      }
+      if (valueEl) valueEl.textContent = label;
+      if (inputButton) inputButton.setAttribute('data-value', label);
     }
 
     const changeEvent = new CustomEvent('change', {

@@ -343,6 +343,19 @@ describe('getFieldLabel', () => {
 
     combobox.remove();
   });
+
+  test('uses lightning-combobox button aria-label when element label is unavailable', () => {
+    const combobox = document.createElement('lightning-combobox');
+    const button = document.createElement('button');
+    button.setAttribute('part', 'input-button');
+    button.setAttribute('aria-label', 'Status');
+    combobox.appendChild(button);
+    document.body.appendChild(combobox);
+
+    expect(contentFns.getFieldLabel(combobox)).toBe('Status');
+
+    combobox.remove();
+  });
 });
 
 // ==================== getFieldValue ====================
@@ -407,6 +420,16 @@ describe('getFieldValue', () => {
     });
 
     expect(contentFns.getFieldValue(combobox)).toBe('');
+  });
+
+  test('reads selected lightning-combobox option when element value is unavailable', () => {
+    const combobox = document.createElement('lightning-combobox');
+    const option = document.createElement('lightning-base-combobox-item');
+    option.setAttribute('data-value', 'finished');
+    option.setAttribute('aria-selected', 'true');
+    combobox.appendChild(option);
+
+    expect(contentFns.getFieldValue(combobox)).toBe('finished');
   });
 
   test('returns empty string for empty input', () => {
@@ -705,6 +728,51 @@ describe('restoreFields', () => {
 
     expect(restored).toBe(1);
     expect(combobox.value).toBe('finished');
+    expect(value.textContent).toBe('Finished');
+    expect(button.getAttribute('data-value')).toBe('Finished');
+
+    combobox.remove();
+  });
+
+  test('restores light DOM lightning-combobox rendered by Salesforce docs', () => {
+    const combobox = document.createElement('lightning-combobox');
+    const button = document.createElement('button');
+    button.setAttribute('part', 'input-button');
+    button.setAttribute('aria-expanded', 'false');
+    button.setAttribute('data-value', 'In Progress');
+
+    const value = document.createElement('span');
+    value.setAttribute('part', 'input-button-value');
+    value.textContent = 'In Progress';
+    button.appendChild(value);
+
+    const option = document.createElement('lightning-base-combobox-item');
+    option.setAttribute('data-value', 'finished');
+    option.setAttribute('aria-selected', 'false');
+    option.textContent = 'Finished';
+    option.addEventListener('click', () => {
+      option.setAttribute('aria-selected', 'true');
+      value.textContent = 'Finished';
+    });
+
+    button.addEventListener('click', () => {
+      button.setAttribute('aria-expanded', 'true');
+    });
+
+    combobox.append(button, option);
+    document.body.appendChild(combobox);
+
+    const restored = contentFns.restoreFields([{
+      selector: 'body > lightning-combobox',
+      name: 'progress',
+      type: 'lightning-combobox',
+      value: 'finished',
+      displayValue: 'Finished'
+    }]);
+
+    expect(restored).toBe(1);
+    expect(button.getAttribute('aria-expanded')).toBe('true');
+    expect(option.getAttribute('aria-selected')).toBe('true');
     expect(value.textContent).toBe('Finished');
     expect(button.getAttribute('data-value')).toBe('Finished');
 

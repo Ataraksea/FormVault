@@ -562,11 +562,19 @@
       }
     }
 
-    el.dispatchEvent(new CustomEvent('change', {
+    const changeEvent = new CustomEvent('change', {
       bubbles: true,
       composed: true,
       detail: { value: fieldData.value }
-    }));
+    });
+
+    try {
+      Object.defineProperty(changeEvent, 'target', { value: el });
+    } catch (e) {
+      // Browser-managed event target remains available during dispatch.
+    }
+
+    el.dispatchEvent(changeEvent);
   }
 
   // ==================== RESTORE TOAST ====================

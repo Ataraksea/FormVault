@@ -687,6 +687,31 @@ describe('restoreFields', () => {
     combobox.remove();
   });
 
+  test('restores lightning-combobox with event target for LWC handlers', () => {
+    const combobox = document.createElement('lightning-combobox');
+    combobox.name = 'progress';
+    combobox.value = 'inProgress';
+    document.body.appendChild(combobox);
+
+    let eventTarget = null;
+    combobox.addEventListener('change', event => {
+      eventTarget = event.target;
+    });
+
+    const restored = contentFns.restoreFields([{
+      selector: 'body > lightning-combobox',
+      name: 'progress',
+      type: 'lightning-combobox',
+      value: 'finished',
+      displayValue: 'Finished'
+    }]);
+
+    expect(restored).toBe(1);
+    expect(eventTarget).toBe(combobox);
+
+    combobox.remove();
+  });
+
   test('skips unframed saved fields in child frames', () => {
     const combobox = document.createElement('lightning-combobox');
     combobox.name = 'progress';

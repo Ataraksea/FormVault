@@ -34,7 +34,7 @@ Ever lost a long form submission to a page crash, accidental refresh, or back-bu
 
 ## Features
 
-- **Auto-Save** - Saves form data every 3 seconds after your last keystroke, no manual action needed
+- **Auto-Save** - Saves text inputs, textareas, dropdowns, and contenteditable fields every 3 seconds after your last change
 - **One-Click Restore** - Non-intrusive toast notification offers instant recovery when revisiting a page
 - **React & SPA Compatible** - MutationObserver detects dynamically added fields; native value setters work with React controlled components
 - **Privacy-First** - 100% local storage, zero network requests, zero analytics, zero telemetry

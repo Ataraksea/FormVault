@@ -91,6 +91,11 @@
     return TRACKED_CUSTOM_ELEMENTS.has(el.tagName.toLowerCase());
   }
 
+  function getComposedParent(el) {
+    const root = el.getRootNode && el.getRootNode();
+    return el.parentElement || (root instanceof ShadowRoot ? root.host : null);
+  }
+
   /**
    * Generate a unique CSS selector for an element
    */
@@ -114,7 +119,7 @@
         parts.unshift(`#${cssEscape(current.id)}`);
         break;
       }
-      const parent = current.parentElement;
+      const parent = getComposedParent(current);
       if (parent) {
         const siblings = Array.from(parent.children).filter(c => c.tagName === current.tagName);
         if (siblings.length > 1) {
@@ -133,6 +138,8 @@
    * Generate an XPath for an element (last resort identifier)
    */
   function getXPath(el) {
+    if (el.getRootNode && el.getRootNode() instanceof ShadowRoot) return '';
+
     const parts = [];
     let current = el;
     while (current && current.nodeType === Node.ELEMENT_NODE) {
@@ -221,6 +228,15 @@
     return value.length >= MIN_FIELD_LENGTH;
   }
 
+  function walkElements(root, callback) {
+    root.querySelectorAll('*').forEach(el => {
+      callback(el);
+      if (el.shadowRoot) {
+        walkElements(el.shadowRoot, callback);
+      }
+    });
+  }
+
   /**
    * Validate that a favicon URL uses a safe protocol
    */
@@ -239,35 +255,25 @@
   function findFormFields() {
     const fields = [];
 
-    // Standard inputs
-    document.querySelectorAll('input').forEach(el => {
-      const type = (el.type || 'text').toLowerCase();
-      if (type !== 'checkbox' && !TRACKED_INPUT_TYPES.has(type)) return;
-      if (isSensitiveField(el)) return;
-      fields.push(el);
-    });
-
-    // Textareas
-    document.querySelectorAll('textarea').forEach(el => {
-      if (isSensitiveField(el)) return;
-      fields.push(el);
-    });
-
-    // Selects
-    document.querySelectorAll('select').forEach(el => {
-      if (isSensitiveField(el)) return;
-      fields.push(el);
-    });
-
-    // Contenteditable elements
-    document.querySelectorAll('[contenteditable="true"]').forEach(el => {
-      if (el.tagName === 'BODY') return;
-      fields.push(el);
-    });
-
-    document.querySelectorAll(Array.from(TRACKED_CUSTOM_ELEMENTS).join(',')).forEach(el => {
-      if (isSensitiveField(el)) return;
-      fields.push(el);
+    walkElements(document, el => {
+      if (el.tagName === 'INPUT') {
+        const type = (el.type || 'text').toLowerCase();
+        if (type !== 'checkbox' && !TRACKED_INPUT_TYPES.has(type)) return;
+        if (isSensitiveField(el)) return;
+        fields.push(el);
+      } else if (el.tagName === 'TEXTAREA') {
+        if (isSensitiveField(el)) return;
+        fields.push(el);
+      } else if (el.tagName === 'SELECT') {
+        if (isSensitiveField(el)) return;
+        fields.push(el);
+      } else if (el.getAttribute('contenteditable') === 'true') {
+        if (el.tagName === 'BODY') return;
+        fields.push(el);
+      } else if (isTrackedCustomElement(el)) {
+        if (isSensitiveField(el)) return;
+        fields.push(el);
+      }
     });
 
     return fields;
@@ -397,6 +403,38 @@
     fields.forEach(attachFieldListeners);
   }
 
+  function querySelectorDeep(selector) {
+    let found = null;
+
+    function search(root) {
+      try {
+        found = root.querySelector(selector);
+      } catch (e) {
+        return true;
+      }
+      if (found) return true;
+
+      const elements = root.querySelectorAll('*');
+      for (const el of elements) {
+        if (el.shadowRoot && search(el.shadowRoot)) return true;
+      }
+      return false;
+    }
+
+    search(document);
+    return found;
+  }
+
+  function getCustomElementValueSetter(el) {
+    let current = el;
+    while (current) {
+      const descriptor = Object.getOwnPropertyDescriptor(current, 'value');
+      if (descriptor?.set) return descriptor.set;
+      current = Object.getPrototypeOf(current);
+    }
+    return null;
+  }
+
   // ==================== RESTORE TOAST ====================
 
   /**
@@ -424,14 +462,14 @@
 
       // Try selector first
       try {
-        el = document.querySelector(fieldData.selector);
+        el = querySelectorDeep(fieldData.selector);
       } catch (e) {
         // Invalid selector
       }
 
       // Try by name
       if (!el && fieldData.name) {
-        el = document.querySelector(`[name="${cssEscape(fieldData.name)}"]`) ||
+        el = querySelectorDeep(`[name="${cssEscape(fieldData.name)}"]`) ||
              document.getElementById(fieldData.name);
       }
 
@@ -476,7 +514,12 @@
         el.dispatchEvent(new Event('input', { bubbles: true }));
         el.dispatchEvent(new Event('change', { bubbles: true }));
       } else if (fieldData.type === 'lightning-combobox') {
-        el.value = fieldData.value;
+        const nativeSetter = getCustomElementValueSetter(el);
+        if (nativeSetter) {
+          nativeSetter.call(el, fieldData.value);
+        } else {
+          el.value = fieldData.value;
+        }
         el.dispatchEvent(new CustomEvent('change', {
           bubbles: true,
           composed: true,
@@ -789,6 +832,7 @@
     if (mutationObserver) mutationObserver.disconnect();
 
     let pendingScan = false;
+    const trackedCustomSelector = Array.from(TRACKED_CUSTOM_ELEMENTS).join(',');
 
     mutationObserver = new MutationObserver((mutations) => {
       if (pendingScan) return;
@@ -807,7 +851,7 @@
 
           if (node.querySelectorAll) {
             const fields = node.querySelectorAll(
-              'input, textarea, select, [contenteditable="true"], lightning-combobox'
+              `input, textarea, select, [contenteditable="true"], ${trackedCustomSelector}`
             );
             if (fields.length > 0) {
               hasNewFields = true;

@@ -183,8 +183,8 @@
 
         const value = document.createElement('span');
         value.className = 'field-value';
-        value.textContent = truncate(field.value || '', 50);
-        value.title = field.value || '';
+        value.textContent = truncate(formatFieldValue(field.value), 50);
+        value.title = formatFieldValue(field.value);
 
         item.appendChild(label);
         item.appendChild(value);
@@ -394,6 +394,11 @@
     return days + ' day' + (days !== 1 ? 's' : '') + ' ago';
   }
 
+  function formatFieldValue(value) {
+    if (Array.isArray(value)) return value.join(', ');
+    return value || '';
+  }
+
   /**
    * Copy form data to clipboard. Returns true on success, false on failure.
    */
@@ -408,7 +413,7 @@
 
     form.fields.forEach(field => {
       const label = field.label || field.name || 'Field';
-      lines.push(label + ': ' + (field.value || ''));
+      lines.push(label + ': ' + formatFieldValue(field.value));
     });
 
     const text = lines.join('\n');
